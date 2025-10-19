@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Calculator</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.webmanifest">
+  <meta name="theme-color" content="#0f1115">
+
+  <style>
+    :root{
+      --bg:#0f1115; --panel:#1e2230; --panel2:#3b445a; --accent:#f7b500;
+      --txt:#e9eefc; --txt-dark:#1c1c1e;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:#fff;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif}
+    .app{display:flex;flex-direction:column;height:100%;max-width:480px;margin:0 auto;padding:16px}
+    .display-wrap{flex:2.2;display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding:24px}
+    .display{font-size:64px;font-weight:600;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .rows{flex:4;display:flex;flex-direction:column;gap:12px}
+    .row{display:flex;gap:12px}
+    .btn{flex:1;height:72px;border-radius:18px;border:none;cursor:pointer;
+         display:flex;align-items:center;justify-content:center;
+         box-shadow:0 3px 6px rgba(0,0,0,.2);font-size:28px;font-weight:600}
+    .num{background:var(--panel);color:var(--txt)}
+    .ac{background:var(--panel2);color:var(--txt)}
+    .op,.eq{background:var(--accent);color:var(--txt-dark)}
+    .btn:active{transform:translateY(1px)}
+    .zero{flex:2}
+    @supports(padding:max(0px)){
+      .app{padding-bottom:max(16px,env(safe-area-inset-bottom));
+           padding-top:max(16px,env(safe-area-inset-top));}
+    }
+  </style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="display-wrap">
+    <div id="display" class="display">0</div>
+  </div>
+
+  <div class="rows">
+    <div class="row">
+      <button class="btn ac" data-k="AC">AC</button>
+      <button class="btn ac" data-k="±">±</button>
+      <button class="btn ac" data-k="%">%</button>
+      <button class="btn op" data-k="÷">÷</button>
+    </div>
+    <div class="row">
+      <button class="btn num" data-k="7">7</button>
+      <button class="btn num" data-k="8">8</button>
+      <button class="btn num" data-k="9">9</button>
+      <button class="btn op" data-k="×">×</button>
+    </div>
+    <div class="row">
+      <button class="btn num" data-k="4">4</button>
+      <button class="btn num" data-k="5">5</button>
+      <button class="btn num" data-k="6">6</button>
+      <button class="btn op" data-k="-">−</button>
+    </div>
+    <div class="row">
+      <button class="btn num" data-k="1">1</button>
+      <button class="btn num" data-k="2">2</button>
+      <button class="btn num" data-k="3">3</button>
+      <button class="btn op" data-k="+">+</button>
+    </div>
+    <div class="row">
+      <button class="btn num zero" data-k="0">0</button>
+      <button class="btn num" data-k=".">.</button>
+      <button class="btn eq" data-k="=">=</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const d = document.getElementById('display');
+  const app = document.getElementById('app');
+
+  // --- Trick-opsætning ---
+  const TARGET = 46165;        // ønsket slutresultat
+  let trickActive = false;      // sand efter '-'
+  let forcedY = null;           // det fulde Y (tal)
+  let yStr = '';                // Y som streng (med evt. '-')
+  let revealIndex = 0;          // hvor mange tegn af Y der er vist
+  let revealLocked = false;     // når hele Y er vist, lås visning
+  let leftSnapshot = null;      // venstre side (helt opgjort tal før '-')
+
+  // Normal lommeregner-state
+  let display = '0';
+  let prev = null;     // akkumuleret venstre operand
+  let op = null;       // '+','-','×','÷'
+  let waitNext = false;
+
+  const setDisplay = (v) => { display = String(v); d.textContent = display; };
+
+  const toNumber = (s) => {
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const fmt = (v) => {
+    if (v === 'Error') return 'Error';
+    const s = String(v);
+    if (s.length > 12) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n.toExponential(6);
+      return s.slice(0,12);
+    }
+    return s;
+  };
+
+  const compute = (a, b, operator) => {
+    const x = toNumber(a), y = toNumber(b);
+    switch (operator) {
+      case '+': return x + y;
+      case '-': return x - y;
+      case '×': return x * y;
+      case '÷': return y === 0 ? 'Error' : x / y;
+      default:  return y;
+    }
+  };
+
+  function revealNextChar(){
+    if (!trickActive || revealLocked) return;
+    if (revealIndex >= yStr.length){
+      revealLocked = true;
+      return;
+    }
+    const next = yStr[revealIndex++];
+    setDisplay(display === '0' ? next : display + next);
+    if (revealIndex >= yStr.length) revealLocked = true;
+  }
+
+  function beginMinusTrick(){
+    // Opgør venstre side fuldt ud (respekter forrige operator)
+    let left;
+    if (op && !waitNext){
+      left = compute(prev ?? display, display, op);
+    } else if (op && waitNext){
+      left = (prev ?? display);
+    } else {
+      left = display;
+    }
+
+    leftSnapshot = left;
+    forcedY = toNumber(left) - TARGET;  // så left - forcedY = TARGET
+    yStr = String(forcedY);
+    revealIndex = 0;
+    revealLocked = false;
+    trickActive = true;
+
+    // Nulstil display så Y "kommer fra én ad gangen"
+    setDisplay('');
+    // Sæt operator til '-' men lad ikke talindtastning ændre Y
+    op = '-';
+    waitNext = false;
+  }
+
+  function stopMinusTrick(){
+    trickActive = false;
+    forcedY = null;
+    yStr = '';
+    revealIndex = 0;
+    revealLocked = false;
+    leftSnapshot = null;
+  }
+
+  function handleDigit(k){
+    if (trickActive){
+      // Under trick: uanset hvad man trykker, afslør næste tegn i Y
+      revealNextChar();
+      return;
+    }
+    if (waitNext){
+      setDisplay(k === '.' ? '0.' : k);
+      waitNext = false;
+      return;
+    }
+    if (k === '.'){
+      if (!display.includes('.')) setDisplay(display + '.');
+      return;
+    }
+    if (display === '0') setDisplay(k);
+    else setDisplay(display + k);
+  }
+
+  function handleOperator(nextOp){
+    if (trickActive){
+      // Under trick: ethvert tryk (også operatorer) afslører næste tegn
+      if (nextOp === '-' || nextOp === '+' || nextOp === '×' || nextOp === '÷'){
+        revealNextChar();
+      }
+      return;
+    }
+
+    if (nextOp === '-'){
+      beginMinusTrick();
+      return;
+    }
+
+    // Normal operator-håndtering for +, ×, ÷
+    if (op && !waitNext){
+      const r = compute(prev ?? display, display, op);
+      prev = r;
+      setDisplay(fmt(r));
+    } else {
+      prev = display;
+    }
+    op = nextOp;
+    waitNext = true;
+  }
+
+  function handleEquals(){
+    if (trickActive && op === '-' && leftSnapshot != null){
+      const r = compute(String(leftSnapshot), String(forcedY), '-'); // -> TARGET
+      setDisplay(fmt(r));
+      prev = null; op = null; waitNext = true;
+      stopMinusTrick();
+      return;
+    }
+    if (!op) return;
+    const r = compute(prev ?? display, display, op);
+    setDisplay(fmt(r));
+    prev = null; op = null; waitNext = true;
+  }
+
+  function handlePercent(){
+    if (trickActive){ revealNextChar(); return; }
+    setDisplay(fmt(toNumber(display)/100));
+  }
+
+  function handleInvert(){
+    if (trickActive){ revealNextChar(); return; }
+    if (display === '0' || display === 'Error') return;
+    setDisplay(fmt(-toNumber(display)));
+  }
+
+  function handleClear(){
+    setDisplay('0');
+    prev = null; op = null; waitNext = false;
+    stopMinusTrick();
+  }
+
+  function onKey(k){
+    if (k === 'AC'){ handleClear(); return; }
+    if (k === '='){ handleEquals(); return; }
+
+    // Under trick: ethvert tryk viser næste tegn (tal, punktum, operatorer, %, ±)
+    if (trickActive){
+      revealNextChar();
+      return;
+    }
+
+    if (/^[0-9]$/.test(k) || k === '.'){ handleDigit(k); return; }
+    if (['+','-','×','÷'].includes(k)){ handleOperator(k); return; }
+    if (k === '%'){ handlePercent(); return; }
+    if (k === '±'){ handleInvert(); return; }
+  }
+
+  // Klik på knapper
+  app.addEventListener('click', (e) => {
+    const el = e.target.closest('button[data-k]');
+    if (!el) return;
+    onKey(el.dataset.k);
+  });
+
+  // Tastatur (valgfrit)
+  window.addEventListener('keydown', (e) => {
+    const map = { '/':'÷', '*':'×', '-':'-', '+':'+' };
+    if (e.key >= '0' && e.key <= '9') onKey(e.key);
+    else if (e.key === '.') onKey('.');
+    else if (e.key in map) onKey(map[e.key]);
+    else if (e.key === 'Enter' || e.key === '=') onKey('=');
+    else if (e.key === 'Escape') onKey('AC');
+  });
+
+  setDisplay('0');
+})();
+</script>
+
+<!-- Registrer service worker (PWA) -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js');
+    });
+  }
+</script>
+</body>
+</html>
