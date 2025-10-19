@@ -292,3 +292,12 @@
 </script>
 </body>
 </html>
+
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/Lommeregner-/sw.js');
+  });
+}
+</script>
